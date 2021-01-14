@@ -15,6 +15,8 @@ enum Error {
     ScriptMissing,
     #[error("failed while reading server response")]
     ResponseBodyError(#[from] actix_web::client::PayloadError),
+    #[error("failed to parse a time")]
+    ParseTimeError(#[from] chrono::format::ParseError),
 }
 
 impl actix_web::error::ResponseError for Error {}
@@ -25,6 +27,8 @@ async fn main() -> std::io::Result<()> {
         actix_web::App::new()
             .data(actix_web::client::Client::default())
             .route("/api/357", actix_web::web::get().to(schedule_357))
+            .route("/api/rns", actix_web::web::get().to(schedule_rns))
+            .service(actix_files::Files::new("/", "frontend/public"))
     })
     .bind("0.0.0.0:8000")?
     .run()
@@ -38,6 +42,85 @@ struct Item357 {
     name: String,
     description: String,
     hosts: Vec<String>,
+}
+
+async fn schedule_rns(
+    client: actix_web::web::Data<actix_web::client::Client>,
+) -> Result<impl Responder, Error> {
+    use chrono::Datelike;
+    use select::predicate::{Child, Class, Name};
+    let mut response = client
+        .get("https://nowyswiat.online/ramowka/")
+        .send()
+        .await?;
+    let body = response.body().await?;
+    let doc =
+        select::document::Document::from_read(&*body).expect("failed to read document from bytes");
+    let mut items = vec![];
+    let today = chrono::Local::today();
+    for (day_of_week, tab) in doc.find(Class("proradio-tabs__content")).enumerate() {
+        let day = today
+            + chrono::Duration::days(
+                (if day_of_week >= today.weekday().num_days_from_monday() as usize {
+                    day_of_week
+                } else {
+                    day_of_week + 7
+                } - today.weekday().num_days_from_monday() as usize) as i64,
+            );
+        for show in tab.find(Class("proradio-post__card--shows")) {
+            let name = show
+                .find(Child(Class("proradio-post__headercont--ex"), Name("h4")))
+                .next()
+                .or_else(|| {
+                    show.find(Child(
+                        Class("proradio-post__card__cap"),
+                        Class("proradio-post__title"),
+                    ))
+                    .next()
+                })
+                .map(|node| node.text().trim().to_string())
+                .unwrap_or_else(|| "".to_string());
+            let description = show
+                .find(Child(Class("proradio-post__headercont--ex"), Name("p")))
+                .next()
+                .map(|node| node.text().trim().to_string())
+                .unwrap_or_else(|| "".to_string());
+            let hosts = show
+                .find(Child(Class("proradio-post__headercont--ex"), Name("h6")))
+                .map(|node| node.text().trim().to_string())
+                .collect();
+            // TODO: better host splitting
+            let times_string = show
+                .find(Child(
+                    Class("proradio-post__card__cap"),
+                    Class("proradio-itemmetas"),
+                ))
+                .next()
+                .map(|node| node.text())
+                .unwrap_or_else(|| "00:00 - 00:00".to_string());
+            let mut times = times_string.trim().split(" - ");
+            let start_time =
+                chrono::NaiveTime::parse_from_str(times.next().unwrap_or("00:00").trim(), "%H:%M")?;
+            let end_time =
+                chrono::NaiveTime::parse_from_str(times.next().unwrap_or("00:00").trim(), "%H:%M")?;
+            let duration = end_time.signed_duration_since(start_time);
+            let abs_duration = if duration > chrono::Duration::zero() {
+                duration
+            } else {
+                -duration
+            };
+            let start_dt = day.and_time(start_time).unwrap();
+            let end_dt = start_dt + abs_duration;
+            items.push(Item357 {
+                name,
+                description,
+                hosts,
+                start_at: start_dt.timestamp_millis() as f64,
+                end_at: end_dt.timestamp_millis() as f64,
+            });
+        }
+    }
+    Ok(actix_web::web::Json(items))
 }
 
 async fn schedule_357(client: actix_web::web::Data<actix_web::client::Client>) -> impl Responder {
