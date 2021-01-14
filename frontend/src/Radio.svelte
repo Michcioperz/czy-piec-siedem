@@ -41,7 +41,7 @@ function scrollToCurrent() {
   <div class="schedule">
     {#each items as item (item.start_at)}
     <div class="item" class:current={new Date() >= item.start_at && new Date() < item.end_at}>
-      <time datetime={item.start_at.toISOString()}>{item.start_at.toISOString()}</time>
+      <time datetime={item.start_at.toISOString()}>{new Intl.DateTimeFormat("pl-PL", {year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric'}).format(item.start_at)}</time>
       <h3>{item.name}</h3>
       <h5>{item.description}</h5>
       <ul>
